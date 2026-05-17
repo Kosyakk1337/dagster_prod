@@ -1,0 +1,133 @@
+version: "3.8"
+
+services:
+  # 1. PostgreSQL (Хранилище стейта, история запусков и очередь сообщений)
+  postgresql:
+    image: postgres:15
+    # ports:
+    #   - "127.0.0.1:5432:5432" # В продакшене порт БД не должен торчать наружу
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data # Сохранение данных БД на жестком диске
+    networks:
+      - dagster_network
+
+  # 2. S3 Storage (MinIO)
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "127.0.0.1:9000:9000" # Прячем S3 за локалхост, либо за Reverse Proxy
+      - "127.0.0.1:9001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - minio_data:/data # Сохранение бакетов и файлов на жестком диске
+    networks:
+      - dagster_network
+
+  # 3. Инициализация S3 (Автоматическое создание bucket'а при старте)
+  create-buckets:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      echo 'Подключаемся к MinIO...';
+      /usr/bin/mc alias set myminio http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD};
+      echo 'Создаем бакет dagster-data...';
+      /usr/bin/mc mb myminio/dagster-data --ignore-existing || true;
+      echo 'Готово!';
+      exit 0;
+      "
+    networks:
+      - dagster_network
+
+  # 4. Dagster gRPC Сервер (Изолированное выполнение пользовательского кода из папки dags)
+  dagster-user-code:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: dagster api grpc -h 0.0.0.0 -p 4000 -m dags.definitions
+    environment:
+      DAGSTER_POSTGRES_USER: ${POSTGRES_USER}
+      DAGSTER_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DAGSTER_POSTGRES_DB: ${POSTGRES_DB}
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_ENDPOINT_URL: http://minio:9000
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    volumes:
+      - ./dags:/opt/dagster/app/dags
+      - ./docker/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml
+    networks:
+      - dagster_network
+
+  # 5. Dagster Webserver (Пользовательский интерфейс)
+  dagster-webserver:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: dagster-webserver -h 0.0.0.0 -p 3000 -w /opt/dagster/dagster_home/workspace.yaml
+    environment:
+      DAGSTER_POSTGRES_USER: ${POSTGRES_USER}
+      DAGSTER_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DAGSTER_POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "127.0.0.1:3000:3000" # Защищаем доступ извне без аутентификации
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      dagster-user-code:
+        condition: service_started
+    volumes:
+      - ./docker/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml
+      - ./docker/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml
+    networks:
+      - dagster_network
+
+  # 6. Dagster Daemon (Шедулер и консьюмер очереди из PostgreSQL)
+  dagster-daemon:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    command: dagster-daemon run -w /opt/dagster/dagster_home/workspace.yaml
+    environment:
+      DAGSTER_POSTGRES_USER: ${POSTGRES_USER}
+      DAGSTER_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DAGSTER_POSTGRES_DB: ${POSTGRES_DB}
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      dagster-user-code:
+        condition: service_started
+    volumes:
+      - ./docker/dagster.yaml:/opt/dagster/dagster_home/dagster.yaml
+      - ./docker/workspace.yaml:/opt/dagster/dagster_home/workspace.yaml
+    networks:
+      - dagster_network
+
+networks:
+  dagster_network:
+    driver: bridge
+
+volumes:
+  postgres_data: # Именованный том для вечного хранения БД
+  minio_data:    # Именованный том для вечного хранения S3
