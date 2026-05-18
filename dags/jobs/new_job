@@ -1,7 +1,0 @@
-from dagster import define_asset_job, AssetSelection
-
-# Dagster сам найдет переменную pandas_etl_job благодаря нашему скрипту
-pandas_etl_job = define_asset_job(
-    name="pandas_s3_etl_job",
-    selection=AssetSelection.all()
-)

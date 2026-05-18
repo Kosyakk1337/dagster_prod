@@ -2,4 +2,4 @@ load_from:
   - grpc_server:
       host: dagster-user-code
       port: 4000
-      location_name: "dags_location"
+      location_name: "my_dags"

@@ -2,5 +2,6 @@ dagster
 dagster-webserver
 dagster-postgres
 dagster-aws
-boto3
 pandas
+boto3
+numpy

@@ -1,19 +1,9 @@
-storage:
-  postgres:
-    postgres_db:
-      username:
-        env: DAGSTER_POSTGRES_USER
-      password:
-        env: DAGSTER_POSTGRES_PASSWORD
-      hostname: postgresql
-      db_name:
-        env: DAGSTER_POSTGRES_DB
-      port: 5432
-
-# Настройка PostgreSQL в роли брокера сообщений (очереди)
 run_coordinator:
   module: dagster.core.run_coordinator
   class: QueuedRunCoordinator
   config:
-    max_concurrent_runs: 5        # Максимальное количество одновременно работающих джобов
-    dequeue_interval_seconds: 5   # Частота опроса очереди демоном
+    max_concurrent_runs: 20
+
+run_launcher:
+  module: dagster.core.launcher
+  class: DefaultRunLauncher
